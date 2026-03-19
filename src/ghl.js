@@ -68,4 +68,19 @@ async function getContact(contactId) {
   return ghlFetch(`/contacts/${contactId}`);
 }
 
-module.exports = { sendMessage, addNote, addTag, getContact };
+/**
+ * Get the latest inbound message from a conversation.
+ * Returns the message text, or null if not found.
+ */
+async function getLastInboundMessage(conversationId) {
+  const data = await ghlFetch(`/conversations/${conversationId}/messages`);
+  const messages = data?.messages ?? data?.lastMessageBody ?? [];
+  if (typeof messages === 'string') return messages;
+  // Find the most recent inbound message
+  const inbound = [...messages]
+    .reverse()
+    .find((m) => m.direction === 'inbound' || m.messageType === 'TYPE_INCOMING');
+  return inbound?.body ?? inbound?.message ?? null;
+}
+
+module.exports = { sendMessage, addNote, addTag, getContact, getLastInboundMessage };
