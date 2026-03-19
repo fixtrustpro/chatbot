@@ -3,7 +3,6 @@
 const { chat } = require('./claude');
 const { sendMessage, addNote, getContact } = require('./ghl');
 
-// Map GHL messageType values to the GHL send API channel type
 const CHANNEL_TYPE_MAP = {
   TYPE_FB_MSG: 'FB',
   TYPE_INSTAGRAM: 'IG',
@@ -12,52 +11,43 @@ const CHANNEL_TYPE_MAP = {
   TYPE_EMAIL: 'Email',
 };
 
-/**
- * Verify the optional webhook secret passed as ?secret=... in the URL.
- */
 function verifySecret(req) {
   const secret = (process.env.GHL_WEBHOOK_SECRET || '').trim();
   if (!secret) return true;
   return req.query.secret === secret;
 }
 
-/**
- * Check if a contact has the "ai off" tag in GHL.
- * Returns true if the bot should skip this contact.
- */
 async function isAiOff(contactId) {
   try {
     const data = await getContact(contactId);
     const tags = data?.contact?.tags ?? [];
     return tags.includes('ai off');
   } catch (err) {
-    // If we can't fetch the contact, log but don't block
     console.error(`Could not fetch tags for ${contactId}:`, err.message);
     return false;
   }
 }
 
 /**
- * Handle POST /webhook — incoming message event from GHL workflow.
+ * Handle POST /webhook — works in both Express (local) and Vercel serverless.
+ * All async work is completed before sending the 200 response so Vercel
+ * doesn't terminate the function early.
  */
 async function handleMessage(req, res) {
-  // Respond 200 immediately so GHL doesn't retry
-  res.sendStatus(200);
-
   if (!verifySecret(req)) {
-    console.warn('Invalid webhook secret — ignoring');
-    return;
+    console.warn('Invalid webhook secret');
+    return res.status(403).end();
   }
 
   const { type, contactId, conversationId, body: messageBody, messageType } = req.body ?? {};
 
-  if (type !== 'InboundMessage') return;
-  if (!contactId || !conversationId || !messageBody) return;
+  if (type !== 'InboundMessage' || !contactId || !conversationId || !messageBody) {
+    return res.status(200).end();
+  }
 
-  // Skip contacts with "ai off" tag
   if (await isAiOff(contactId)) {
     console.log(`[${contactId}] Skipping — "ai off" tag is set`);
-    return;
+    return res.status(200).end();
   }
 
   const channelType = CHANNEL_TYPE_MAP[messageType] ?? 'FB';
@@ -74,6 +64,8 @@ async function handleMessage(req, res) {
   } catch (err) {
     console.error(`Error handling ${contactId}:`, err.message);
   }
+
+  res.status(200).end();
 }
 
 module.exports = { handleMessage };
