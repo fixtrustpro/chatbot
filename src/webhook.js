@@ -1,7 +1,7 @@
 'use strict';
 
 const { chat } = require('./claude');
-const { sendMessage, addNote } = require('./ghl');
+const { sendMessage, addNote, getContact } = require('./ghl');
 
 // Map GHL messageType values to the GHL send API channel type
 const CHANNEL_TYPE_MAP = {
@@ -14,27 +14,31 @@ const CHANNEL_TYPE_MAP = {
 
 /**
  * Verify the optional webhook secret passed as ?secret=... in the URL.
- * Set GHL_WEBHOOK_SECRET in your env and append it to the webhook URL
- * in your GHL workflow to prevent unauthorized calls.
  */
 function verifySecret(req) {
-  const secret = process.env.GHL_WEBHOOK_SECRET;
-  if (!secret) return true; // not configured — skip check
+  const secret = (process.env.GHL_WEBHOOK_SECRET || '').trim();
+  if (!secret) return true;
   return req.query.secret === secret;
 }
 
 /**
+ * Check if a contact has the "ai off" tag in GHL.
+ * Returns true if the bot should skip this contact.
+ */
+async function isAiOff(contactId) {
+  try {
+    const data = await getContact(contactId);
+    const tags = data?.contact?.tags ?? [];
+    return tags.includes('ai off');
+  } catch (err) {
+    // If we can't fetch the contact, log but don't block
+    console.error(`Could not fetch tags for ${contactId}:`, err.message);
+    return false;
+  }
+}
+
+/**
  * Handle POST /webhook — incoming message event from GHL workflow.
- *
- * Expected GHL webhook payload:
- * {
- *   type: "InboundMessage",
- *   locationId: "...",
- *   contactId: "...",
- *   conversationId: "...",
- *   body: "message text",
- *   messageType: "TYPE_FB_MSG" | "TYPE_INSTAGRAM" | "TYPE_SMS" | ...
- * }
  */
 async function handleMessage(req, res) {
   // Respond 200 immediately so GHL doesn't retry
@@ -45,25 +49,26 @@ async function handleMessage(req, res) {
     return;
   }
 
-  const { type, contactId, conversationId, body: messageBody, messageType } = req.body;
+  const { type, contactId, conversationId, body: messageBody, messageType } = req.body ?? {};
 
-  // Only process inbound messages
   if (type !== 'InboundMessage') return;
   if (!contactId || !conversationId || !messageBody) return;
 
-  // Determine reply channel type (default to FB)
-  const channelType = CHANNEL_TYPE_MAP[messageType] ?? 'FB';
+  // Skip contacts with "ai off" tag
+  if (await isAiOff(contactId)) {
+    console.log(`[${contactId}] Skipping — "ai off" tag is set`);
+    return;
+  }
 
+  const channelType = CHANNEL_TYPE_MAP[messageType] ?? 'FB';
   console.log(`[${contactId}] User (${channelType}): ${messageBody}`);
 
   try {
     const reply = await chat(contactId, messageBody);
     console.log(`[${contactId}] Bot: ${reply}`);
 
-    // Send reply back through GHL (routes to FB/IG/SMS automatically)
     await sendMessage({ conversationId, contactId, message: reply, type: channelType });
 
-    // Log the exchange as a note (fire-and-forget)
     addNote(contactId, `User: ${messageBody}\nBot: ${reply}`)
       .catch((err) => console.error('Note error:', err.message));
   } catch (err) {
