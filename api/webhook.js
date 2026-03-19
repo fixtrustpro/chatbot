@@ -14,7 +14,7 @@ const CHANNEL_TYPE_MAP = {
 
 module.exports = async (req, res) => {
   // --- Webhook secret check ---
-  const secret = process.env.GHL_WEBHOOK_SECRET;
+  const secret = (process.env.GHL_WEBHOOK_SECRET || '').trim();
   if (secret && req.query.secret !== secret) {
     console.warn('Invalid webhook secret');
     return res.status(403).end();
