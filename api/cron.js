@@ -173,9 +173,15 @@ module.exports = async (req, res) => {
         const reply = await chat(contactId, messageBody);
         console.log(`[${contactId}] Bot: ${reply}`);
 
-        // --- Check if Ava's reply is offering to book (slot injection) ---
-        const bookingKeywords = ['quick call', 'book', 'schedule', 'calendar', 'appointment', 'morning or afternoon', 'mornings, afternoons', 'time slot', 'get you on', 'grab you a', '15-minute', '15 minute', 'this week'];
-        const isOfferingBooking = bookingKeywords.some(k => reply.toLowerCase().includes(k));
+        // --- Only inject slots if the LEAD has expressed booking intent ---
+        const leadBookingIntent = [
+          'yes', 'yeah', 'yep', 'sure', 'ok', 'okay', 'sounds good', 'let\'s do it',
+          'lets do it', 'book', 'schedule', 'set it up', 'i\'m ready', 'im ready',
+          'i want to', 'sign me up', 'go ahead', 'absolutely', 'definitely',
+          'i\'m in', 'im in', 'works for me', 'that works', 'i\'m interested',
+          'im interested', 'i\'d like', 'id like', 'get me on', 'grab me a',
+        ];
+        const isOfferingBooking = leadBookingIntent.some(k => messageBody.toLowerCase().includes(k));
 
         let finalReply = reply;
         let slots = [];
