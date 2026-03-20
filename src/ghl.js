@@ -103,6 +103,52 @@ async function getConversationMessages(conversationId) {
   return data?.messages?.messages ?? data?.messages ?? [];
 }
 
+/**
+ * Get next available calendar slots (up to 5, daytime Eastern only).
+ */
+async function getFreeSlots(calendarId) {
+  const now = Date.now();
+  const threeDaysOut = now + 3 * 24 * 60 * 60 * 1000;
+  const data = await ghlFetch(
+    `/calendars/${calendarId}/free-slots?startDate=${now}&endDate=${threeDaysOut}&timezone=America/New_York`
+  );
+
+  const slots = [];
+  for (const [, dayData] of Object.entries(data)) {
+    if (!dayData?.slots) continue;
+    for (const slot of dayData.slots) {
+      const hour = new Date(slot).getHours();
+      // Only daytime slots: 9am–6pm Eastern
+      if (hour >= 9 && hour < 18) slots.push(slot);
+      if (slots.length >= 5) break;
+    }
+    if (slots.length >= 5) break;
+  }
+  return slots;
+}
+
+/**
+ * Book an appointment on the GHL calendar.
+ */
+async function bookAppointment({ calendarId, contactId, startTime, title }) {
+  const start = new Date(startTime);
+  const end = new Date(start.getTime() + 30 * 60 * 1000); // 30 min slot
+  return ghlFetch('/calendars/events/appointments', {
+    method: 'POST',
+    body: JSON.stringify({
+      calendarId,
+      locationId: process.env.GHL_LOCATION_ID,
+      contactId,
+      title: title || 'IUL Consultation Call',
+      startTime: start.toISOString(),
+      endTime: end.toISOString(),
+      appointmentStatus: 'confirmed',
+      ignoreDateRange: false,
+      toNotify: true,
+    }),
+  });
+}
+
 module.exports = {
   sendMessage,
   addNote,
@@ -111,4 +157,6 @@ module.exports = {
   getLastInboundMessage,
   getUnreadConversations,
   getConversationMessages,
+  getFreeSlots,
+  bookAppointment,
 };

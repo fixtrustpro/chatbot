@@ -6,8 +6,13 @@ const {
   getConversationMessages,
   sendMessage,
   addNote,
+  addTag,
   getContact,
+  getFreeSlots,
+  bookAppointment,
 } = require('../src/ghl');
+
+const CALENDAR_ID = '4E4MT9Vg4PZidNL6KFd4';
 
 const CHANNEL_TYPE_MAP = {
   TYPE_FB_MSG: 'FB',
@@ -17,7 +22,7 @@ const CHANNEL_TYPE_MAP = {
   TYPE_EMAIL: 'Email',
 };
 
-// Only process messages received in the last 10 minutes to avoid replying to old messages
+// Only process messages received in the last 10 minutes
 const MAX_AGE_MS = 10 * 60 * 1000;
 
 async function isAiOff(contactId) {
@@ -30,9 +35,77 @@ async function isAiOff(contactId) {
   }
 }
 
-module.exports = async (req, res) => {
-  // No auth check — endpoint is low-risk (read GHL + send replies only)
+/**
+ * Format a slot ISO string into readable Eastern time.
+ * e.g. "2026-03-21T14:00:00-04:00" → "Saturday Mar 21 at 2:00 PM ET"
+ */
+function formatSlot(isoString) {
+  const d = new Date(isoString);
+  return d.toLocaleString('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }) + ' ET';
+}
 
+/**
+ * Detect if the user's message is selecting one of the offered slots.
+ * Returns the matching slot ISO string or null.
+ */
+function detectSlotSelection(messageBody, offeredSlots) {
+  if (!offeredSlots || !offeredSlots.length) return null;
+  const text = messageBody.toLowerCase().trim();
+
+  // Check for slot number (1, 2, 3) or partial time match
+  for (let i = 0; i < offeredSlots.length; i++) {
+    const num = String(i + 1);
+    if (text === num || text.startsWith(num + '.') || text.startsWith(num + ')')) {
+      return offeredSlots[i];
+    }
+  }
+
+  // Check for time match (e.g. "2pm", "2:00", "monday")
+  for (const slot of offeredSlots) {
+    const formatted = formatSlot(slot).toLowerCase();
+    const d = new Date(slot);
+    const hour12 = d.toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: true }).toLowerCase();
+    const weekday = d.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'long' }).toLowerCase();
+
+    if (text.includes(hour12) || text.includes(weekday) || formatted.split(' ').some(w => text.includes(w) && w.length > 3)) {
+      return slot;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check conversation history for pending slot offers.
+ * Looks at recent bot messages for the slots we offered.
+ */
+function extractOfferedSlots(messages) {
+  // Find the most recent bot message that contains slot options
+  const sorted = [...messages].sort(
+    (a, b) => new Date(b.dateAdded || 0) - new Date(a.dateAdded || 0)
+  );
+
+  for (const msg of sorted) {
+    if (msg.direction !== 'outbound') continue;
+    const body = msg.body || '';
+    // Look for ISO date strings we embedded in the message metadata
+    const match = body.match(/\[SLOTS:(.*?)\]/);
+    if (match) {
+      try { return JSON.parse(match[1]); } catch { return null; }
+    }
+  }
+  return null;
+}
+
+module.exports = async (req, res) => {
   let processed = 0;
   const errors = [];
 
@@ -46,33 +119,27 @@ module.exports = async (req, res) => {
       if (!conversationId || !contactId) continue;
 
       try {
-        // Get messages and find the last inbound one
         const messages = await getConversationMessages(conversationId);
         if (!messages.length) continue;
 
-        // Messages may be sorted oldest-first or newest-first — handle both
         const sorted = [...messages].sort(
           (a, b) => new Date(a.dateAdded || a.createdAt || 0) - new Date(b.dateAdded || b.createdAt || 0)
         );
         const lastMsg = sorted[sorted.length - 1];
 
-        // Skip if the last message was sent by us (outbound)
         if (lastMsg.direction !== 'inbound') continue;
 
-        // Skip if the message is older than MAX_AGE_MS
         const msgDate = new Date(lastMsg.dateAdded || lastMsg.createdAt || 0);
         if (Date.now() - msgDate.getTime() > MAX_AGE_MS) continue;
 
         const messageBody = lastMsg.body || lastMsg.message || lastMsg.text;
         if (!messageBody) continue;
 
-        // Skip if "ai off" tag is set
         if (await isAiOff(contactId)) {
           console.log(`[${contactId}] Skipping — "ai off" tag`);
           continue;
         }
 
-        // Determine channel type
         const channelType =
           CHANNEL_TYPE_MAP[lastMsg.messageType] ??
           CHANNEL_TYPE_MAP[conv.type] ??
@@ -80,13 +147,66 @@ module.exports = async (req, res) => {
 
         console.log(`[${contactId}] (${channelType}): ${messageBody}`);
 
+        // --- Check if lead is selecting a previously offered slot ---
+        const offeredSlots = extractOfferedSlots(sorted);
+        const selectedSlot = detectSlotSelection(messageBody, offeredSlots);
+
+        if (selectedSlot) {
+          console.log(`[${contactId}] Booking slot: ${selectedSlot}`);
+          try {
+            await bookAppointment({
+              calendarId: CALENDAR_ID,
+              contactId,
+              startTime: selectedSlot,
+              title: 'IUL Consultation Call',
+            });
+
+            const confirmMsg = `You're booked! ✅ Your consultation call is confirmed for ${formatSlot(selectedSlot)}. A licensed field underwriter will call you at that time. Looking forward to speaking with you!`;
+            await sendMessage({ conversationId, contactId, message: confirmMsg, type: channelType });
+
+            // Auto-tag ai off so Ava stops and you take over
+            await addTag(contactId, 'ai off');
+            await addTag(contactId, 'appointment booked');
+            addNote(contactId, `Appointment booked via Ava: ${formatSlot(selectedSlot)}`).catch(() => {});
+
+            console.log(`[${contactId}] Booked & tagged ai off`);
+            processed++;
+          } catch (err) {
+            console.error(`[${contactId}] Booking failed:`, err.message);
+            // Fall through to normal chat if booking fails
+            const reply = await chat(contactId, messageBody);
+            await sendMessage({ conversationId, contactId, message: reply, type: channelType });
+            processed++;
+          }
+          continue;
+        }
+
+        // --- Normal chat flow ---
         const reply = await chat(contactId, messageBody);
         console.log(`[${contactId}] Bot: ${reply}`);
 
-        await sendMessage({ conversationId, contactId, message: reply, type: channelType });
+        // --- Check if Ava's reply is offering to book (slot injection) ---
+        const bookingKeywords = ['quick call', 'book', 'schedule', 'calendar', 'appointment', 'morning or afternoon', 'mornings, afternoons'];
+        const isOfferingBooking = bookingKeywords.some(k => reply.toLowerCase().includes(k));
 
-        addNote(contactId, `User: ${messageBody}\nBot: ${reply}`)
-          .catch((err) => console.error('Note error:', err.message));
+        let finalReply = reply;
+        let slots = [];
+
+        if (isOfferingBooking) {
+          try {
+            slots = await getFreeSlots(CALENDAR_ID);
+            if (slots.length >= 2) {
+              const slotList = slots.slice(0, 3).map((s, i) => `${i + 1}. ${formatSlot(s)}`).join('\n');
+              finalReply = `${reply}\n\nHere are a few available times:\n${slotList}\n\nJust reply with 1, 2, or 3 to confirm your spot. [SLOTS:${JSON.stringify(slots.slice(0, 3))}]`;
+            }
+          } catch (err) {
+            console.error(`[${contactId}] Slot fetch failed:`, err.message);
+          }
+        }
+
+        await sendMessage({ conversationId, contactId, message: finalReply, type: channelType });
+
+        addNote(contactId, `User: ${messageBody}\nBot: ${reply}`).catch(() => {});
 
         processed++;
       } catch (err) {
