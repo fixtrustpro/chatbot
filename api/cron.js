@@ -8,6 +8,7 @@ const {
   addNote,
   addTag,
   getContact,
+  getContactNotes,
   getFreeSlots,
   bookAppointment,
 } = require('../src/ghl');
@@ -84,24 +85,21 @@ function detectSlotSelection(messageBody, offeredSlots) {
 }
 
 /**
- * Check conversation history for pending slot offers.
- * Looks at recent bot messages for the slots we offered.
+ * Check contact notes for pending slot offers saved by Ava.
  */
-function extractOfferedSlots(messages) {
-  // Find the most recent bot message that contains slot options
-  const sorted = [...messages].sort(
-    (a, b) => new Date(b.dateAdded || 0) - new Date(a.dateAdded || 0)
-  );
-
-  for (const msg of sorted) {
-    if (msg.direction !== 'outbound') continue;
-    const body = msg.body || '';
-    // Look for ISO date strings we embedded in the message metadata
-    const match = body.match(/\[SLOTS:(.*?)\]/);
-    if (match) {
-      try { return JSON.parse(match[1]); } catch { return null; }
+async function extractOfferedSlotsFromNotes(contactId) {
+  try {
+    const data = await getContactNotes(contactId);
+    const notes = data?.notes ?? [];
+    // Find the most recent AVA_SLOTS note
+    const sorted = [...notes].sort((a, b) => new Date(b.dateAdded || 0) - new Date(a.dateAdded || 0));
+    for (const note of sorted) {
+      const match = (note.body || '').match(/^AVA_SLOTS:(.*)/);
+      if (match) {
+        try { return JSON.parse(match[1]); } catch { return null; }
+      }
     }
-  }
+  } catch { /* ignore */ }
   return null;
 }
 
@@ -148,7 +146,7 @@ module.exports = async (req, res) => {
         console.log(`[${contactId}] (${channelType}): ${messageBody}`);
 
         // --- Check if lead is selecting a previously offered slot ---
-        const offeredSlots = extractOfferedSlots(sorted);
+        const offeredSlots = await extractOfferedSlotsFromNotes(contactId);
         const selectedSlot = detectSlotSelection(messageBody, offeredSlots);
 
         if (selectedSlot) {
@@ -197,14 +195,24 @@ module.exports = async (req, res) => {
             slots = await getFreeSlots(CALENDAR_ID);
             if (slots.length >= 2) {
               const slotList = slots.slice(0, 3).map((s, i) => `${i + 1}. ${formatSlot(s)}`).join('\n');
-              finalReply = `${reply}\n\nHere are a few available times:\n${slotList}\n\nJust reply with 1, 2, or 3 to confirm your spot. [SLOTS:${JSON.stringify(slots.slice(0, 3))}]`;
+              const slotTag = `[SLOTS:${JSON.stringify(slots.slice(0, 3))}]`;
+              // Strip any existing [SLOTS:...] from Ava's reply, then append clean version
+              const cleanReply = reply.replace(/\[SLOTS:.*?\]/g, '').trimEnd();
+              finalReply = `${cleanReply}\n\nHere are a few available times:\n${slotList}\n\nJust reply with 1, 2, or 3 to confirm your spot.${slotTag}`;
             }
           } catch (err) {
             console.error(`[${contactId}] Slot fetch failed:`, err.message);
           }
         }
 
-        await sendMessage({ conversationId, contactId, message: finalReply, type: channelType });
+        // Send clean message to user (no internal tags)
+        // Store slots in note so we can detect selection on next message
+        const visibleReply = finalReply.replace(/\[SLOTS:.*?\]/g, '').trimEnd();
+        const slotMatch = finalReply.match(/\[SLOTS:(.*?)\]/);
+        await sendMessage({ conversationId, contactId, message: visibleReply, type: channelType });
+        if (slotMatch) {
+          addNote(contactId, `AVA_SLOTS:${slotMatch[1]}`).catch(() => {});
+        }
 
         addNote(contactId, `User: ${messageBody}\nBot: ${reply}`).catch(() => {});
 

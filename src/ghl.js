@@ -69,6 +69,13 @@ async function getContact(contactId) {
 }
 
 /**
+ * Get notes for a contact.
+ */
+async function getContactNotes(contactId) {
+  return ghlFetch(`/contacts/${contactId}/notes`);
+}
+
+/**
  * Get the latest inbound message from a conversation.
  * Returns the message text, or null if not found.
  */
@@ -154,6 +161,7 @@ module.exports = {
   addNote,
   addTag,
   getContact,
+  getContactNotes,
   getLastInboundMessage,
   getUnreadConversations,
   getConversationMessages,
