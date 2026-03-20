@@ -83,4 +83,31 @@ async function getLastInboundMessage(conversationId) {
   return inbound?.body ?? inbound?.message ?? null;
 }
 
-module.exports = { sendMessage, addNote, addTag, getContact, getLastInboundMessage };
+/**
+ * Get conversations that have unread inbound messages.
+ * Sorted by most recent message first.
+ */
+async function getUnreadConversations() {
+  const data = await ghlFetch(
+    `/conversations/search?locationId=${process.env.GHL_LOCATION_ID}&unreadOnly=true&sort=desc&sortBy=last_message_date&limit=20`
+  );
+  return data?.conversations ?? [];
+}
+
+/**
+ * Get messages for a conversation, most recent last.
+ */
+async function getConversationMessages(conversationId) {
+  const data = await ghlFetch(`/conversations/${conversationId}/messages`);
+  return data?.messages ?? [];
+}
+
+module.exports = {
+  sendMessage,
+  addNote,
+  addTag,
+  getContact,
+  getLastInboundMessage,
+  getUnreadConversations,
+  getConversationMessages,
+};
