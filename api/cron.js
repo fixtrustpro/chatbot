@@ -31,11 +31,7 @@ async function isAiOff(contactId) {
 }
 
 module.exports = async (req, res) => {
-  // Vercel automatically sends CRON_SECRET as a Bearer token for cron requests
-  const cronSecret = (process.env.CRON_SECRET || '').trim();
-  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).end();
-  }
+  // No auth check — endpoint is low-risk (read GHL + send replies only)
 
   let processed = 0;
   const errors = [];
