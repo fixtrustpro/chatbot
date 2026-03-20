@@ -196,7 +196,8 @@ module.exports = async (req, res) => {
         }
 
         // Strip the internal [SLOTS:...] tag before sending to the user
-        const visibleReply = finalReply.replace(/\s*\[SLOTS:[^\]]*\]/g, '').trimEnd();
+        // Tag is always at the end, so strip from [SLOTS: to end of string
+        const visibleReply = finalReply.replace(/\s*\[SLOTS:[\s\S]*$/, '').trimEnd();
         await sendMessage({ conversationId, contactId, message: visibleReply, type: channelType });
 
         addNote(contactId, `User: ${messageBody}\nBot: ${reply}`).catch(() => {});
