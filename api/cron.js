@@ -8,7 +8,6 @@ const {
   addNote,
   addTag,
   getContact,
-  getContactNotes,
   getFreeSlots,
   bookAppointment,
 } = require('../src/ghl');
@@ -85,21 +84,12 @@ function detectSlotSelection(messageBody, offeredSlots) {
 }
 
 /**
- * Check contact notes for pending slot offers saved by Ava.
+ * Detect if the message is a simple slot number selection (1, 2, or 3).
  */
-async function extractOfferedSlotsFromNotes(contactId) {
-  try {
-    const data = await getContactNotes(contactId);
-    const notes = data?.notes ?? [];
-    // Find the most recent AVA_SLOTS note
-    const sorted = [...notes].sort((a, b) => new Date(b.dateAdded || 0) - new Date(a.dateAdded || 0));
-    for (const note of sorted) {
-      const match = (note.body || '').match(/^AVA_SLOTS:(.*)/);
-      if (match) {
-        try { return JSON.parse(match[1]); } catch { return null; }
-      }
-    }
-  } catch { /* ignore */ }
+function getSlotNumber(messageBody) {
+  const text = messageBody.trim();
+  if (text === '1' || text === '2' || text === '3') return parseInt(text, 10);
+  if (/^[123][.)]\s*$/.test(text)) return parseInt(text[0], 10);
   return null;
 }
 
@@ -145,38 +135,38 @@ module.exports = async (req, res) => {
 
         console.log(`[${contactId}] (${channelType}): ${messageBody}`);
 
-        // --- Check if lead is selecting a previously offered slot ---
-        const offeredSlots = await extractOfferedSlotsFromNotes(contactId);
-        const selectedSlot = detectSlotSelection(messageBody, offeredSlots);
+        // --- Check if lead is selecting a slot number (1, 2, or 3) ---
+        const slotNumber = getSlotNumber(messageBody);
 
-        if (selectedSlot) {
-          console.log(`[${contactId}] Booking slot: ${selectedSlot}`);
+        if (slotNumber) {
+          console.log(`[${contactId}] Slot selection detected: ${slotNumber}`);
           try {
-            await bookAppointment({
-              calendarId: CALENDAR_ID,
-              contactId,
-              startTime: selectedSlot,
-              title: 'IUL Consultation Call',
-            });
+            const freshSlots = await getFreeSlots(CALENDAR_ID);
+            const selectedSlot = freshSlots[slotNumber - 1];
+            if (selectedSlot) {
+              await bookAppointment({
+                calendarId: CALENDAR_ID,
+                contactId,
+                startTime: selectedSlot,
+                title: 'IUL Consultation Call',
+              });
 
-            const confirmMsg = `You're booked! ✅ Your consultation call is confirmed for ${formatSlot(selectedSlot)}. A licensed field underwriter will call you at that time. Looking forward to speaking with you!`;
-            await sendMessage({ conversationId, contactId, message: confirmMsg, type: channelType });
+              const confirmMsg = `You're all set! Your consultation call is confirmed for ${formatSlot(selectedSlot)}. A licensed field underwriter will reach out at that time. Looking forward to speaking with you!`;
+              await sendMessage({ conversationId, contactId, message: confirmMsg, type: channelType });
 
-            // Auto-tag ai off so Ava stops and you take over
-            await addTag(contactId, 'ai off');
-            await addTag(contactId, 'appointment booked');
-            addNote(contactId, `Appointment booked via Ava: ${formatSlot(selectedSlot)}`).catch(() => {});
+              // Auto-tag ai off — Ava hands off, you take over
+              await addTag(contactId, 'ai off');
+              await addTag(contactId, 'appointment booked');
+              addNote(contactId, `Appointment booked via Ava: ${formatSlot(selectedSlot)}`).catch(() => {});
 
-            console.log(`[${contactId}] Booked & tagged ai off`);
-            processed++;
+              console.log(`[${contactId}] Booked & tagged ai off`);
+              processed++;
+              continue;
+            }
           } catch (err) {
             console.error(`[${contactId}] Booking failed:`, err.message);
-            // Fall through to normal chat if booking fails
-            const reply = await chat(contactId, messageBody);
-            await sendMessage({ conversationId, contactId, message: reply, type: channelType });
-            processed++;
+            // Fall through to normal chat
           }
-          continue;
         }
 
         // --- Normal chat flow ---
@@ -205,14 +195,9 @@ module.exports = async (req, res) => {
           }
         }
 
-        // Send clean message to user (no internal tags)
-        // Store slots in note so we can detect selection on next message
-        const visibleReply = finalReply.replace(/\[SLOTS:.*?\]/g, '').trimEnd();
-        const slotMatch = finalReply.match(/\[SLOTS:(.*?)\]/);
+        // Strip the internal [SLOTS:...] tag before sending to the user
+        const visibleReply = finalReply.replace(/\s*\[SLOTS:[^\]]*\]/g, '').trimEnd();
         await sendMessage({ conversationId, contactId, message: visibleReply, type: channelType });
-        if (slotMatch) {
-          addNote(contactId, `AVA_SLOTS:${slotMatch[1]}`).catch(() => {});
-        }
 
         addNote(contactId, `User: ${messageBody}\nBot: ${reply}`).catch(() => {});
 
