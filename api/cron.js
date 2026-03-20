@@ -186,7 +186,7 @@ module.exports = async (req, res) => {
         console.log(`[${contactId}] Bot: ${reply}`);
 
         // --- Check if Ava's reply is offering to book (slot injection) ---
-        const bookingKeywords = ['quick call', 'book', 'schedule', 'calendar', 'appointment', 'morning or afternoon', 'mornings, afternoons'];
+        const bookingKeywords = ['quick call', 'book', 'schedule', 'calendar', 'appointment', 'morning or afternoon', 'mornings, afternoons', 'time slot', 'get you on', 'grab you a', '15-minute', '15 minute', 'this week'];
         const isOfferingBooking = bookingKeywords.some(k => reply.toLowerCase().includes(k));
 
         let finalReply = reply;
