@@ -1,6 +1,6 @@
 'use strict';
 
-const GHL_BASE = 'https://rest.gohighlevel.com/v1';
+const GHL_BASE = 'https://services.leadconnectorhq.com';
 const TIMEOUT_MS = 8000;
 
 function getHeaders() {
@@ -99,7 +99,8 @@ async function getUnreadConversations() {
  */
 async function getConversationMessages(conversationId) {
   const data = await ghlFetch(`/conversations/${conversationId}/messages`);
-  return data?.messages ?? [];
+  // v2 API nests messages under data.messages.messages
+  return data?.messages?.messages ?? data?.messages ?? [];
 }
 
 module.exports = {
